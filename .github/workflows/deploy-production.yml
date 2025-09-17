@@ -1,4 +1,4 @@
-name: Deploy to Staging
+name: Deploy to Production
 
 on:
   workflow_call:
@@ -7,13 +7,13 @@ on:
         required: true
         type: string
     secrets:
-      SSH_PRIVATE_KEY_STAGING:
+      SSH_PRIVATE_KEY_PRODUCTION:
         required: true
-      REMOTE_USER_STAGING:
+      REMOTE_USER_PRODUCTION:
         required: true
-      REMOTE_HOST_STAGING:
+      REMOTE_HOST_PRODUCTION:
         required: true
-      REMOTE_PATH_STAGING:
+      REMOTE_PATH_PRODUCTION:
         required: true
 
 env:
@@ -61,21 +61,21 @@ jobs:
       - name: Setup SSH key
         uses: webfactory/ssh-agent@v0.9.0
         with:
-          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY_STAGING }}
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY_PRODUCTION }}
 
       - name: Setup remote directories
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER_STAGING }}@${{ secrets.REMOTE_HOST_STAGING }} '
-            mkdir -p ${{ secrets.REMOTE_PATH_STAGING }}/blue &&
-            mkdir -p ${{ secrets.REMOTE_PATH_STAGING }}/green &&
-            mkdir -p ${{ secrets.REMOTE_PATH_STAGING }}/shared/storage
+          ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER_PRODUCTION }}@${{ secrets.REMOTE_HOST_PRODUCTION }} '
+            mkdir -p ${{ secrets.REMOTE_PATH_PRODUCTION }}/blue &&
+            mkdir -p ${{ secrets.REMOTE_PATH_PRODUCTION }}/green &&
+            mkdir -p ${{ secrets.REMOTE_PATH_PRODUCTION }}/shared/storage
           '
 
       - name: Determine deployment target (blue or green)
         id: deployment_target
         run: |
-          TARGET=$(ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER_STAGING }}@${{ secrets.REMOTE_HOST_STAGING }} '
-            CURRENT_LINK="${{ secrets.REMOTE_PATH_STAGING }}/current"
+          TARGET=$(ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER_PRODUCTION }}@${{ secrets.REMOTE_HOST_PRODUCTION }} '
+            CURRENT_LINK="${{ secrets.REMOTE_PATH_PRODUCTION }}/current"
             if [ -L "$CURRENT_LINK" ] && [ -e "$CURRENT_LINK" ]; then
               readlink "$CURRENT_LINK" | grep -q "blue" && echo "green" || echo "blue"
             else
@@ -87,19 +87,19 @@ jobs:
       - name: Deploy files to slot
         run: |
           rsync -avz --exclude='.git' --exclude='node_modules' --exclude='tests' --exclude='.env' ./ \
-            ${{ secrets.REMOTE_USER_STAGING }}@${{ secrets.REMOTE_HOST_STAGING }}:${{ secrets.REMOTE_PATH_STAGING }}/${{ steps.deployment_target.outputs.DEPLOYMENT_TARGET }}/
+            ${{ secrets.REMOTE_USER_PRODUCTION }}@${{ secrets.REMOTE_HOST_PRODUCTION }}:${{ secrets.REMOTE_PATH_PRODUCTION }}/${{ steps.deployment_target.outputs.DEPLOYMENT_TARGET }}/
 
       - name: Setup symlinks
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER_STAGING }}@${{ secrets.REMOTE_HOST_STAGING }} '
-            ln -nfs ${{ secrets.REMOTE_PATH_STAGING }}/shared/storage ${{ secrets.REMOTE_PATH_STAGING }}/${{ steps.deployment_target.outputs.DEPLOYMENT_TARGET }}/storage &&
-            ln -nfs ${{ secrets.REMOTE_PATH_STAGING }}/.env ${{ secrets.REMOTE_PATH_STAGING }}/${{ steps.deployment_target.outputs.DEPLOYMENT_TARGET }}/.env
+          ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER_PRODUCTION }}@${{ secrets.REMOTE_HOST_PRODUCTION }} '
+            ln -nfs ${{ secrets.REMOTE_PATH_PRODUCTION }}/shared/storage ${{ secrets.REMOTE_PATH_PRODUCTION }}/${{ steps.deployment_target.outputs.DEPLOYMENT_TARGET }}/storage &&
+            ln -nfs ${{ secrets.REMOTE_PATH_PRODUCTION }}/.env ${{ secrets.REMOTE_PATH_PRODUCTION }}/${{ steps.deployment_target.outputs.DEPLOYMENT_TARGET }}/.env
           '
 
       - name: Run Artisan commands
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER_STAGING }}@${{ secrets.REMOTE_HOST_STAGING }} '
-            cd ${{ secrets.REMOTE_PATH_STAGING }}/${{ steps.deployment_target.outputs.DEPLOYMENT_TARGET }} &&
+          ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER_PRODUCTION }}@${{ secrets.REMOTE_HOST_PRODUCTION }} '
+            cd ${{ secrets.REMOTE_PATH_PRODUCTION }}/${{ steps.deployment_target.outputs.DEPLOYMENT_TARGET }} &&
             php artisan optimize &&
             php artisan optimize:clear
              
@@ -107,15 +107,15 @@ jobs:
 
       - name: Switch symlink to new slot
         run: |
-          ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER_STAGING }}@${{ secrets.REMOTE_HOST_STAGING }} '
-            ln -nfs ${{ secrets.REMOTE_PATH_STAGING }}/${{ steps.deployment_target.outputs.DEPLOYMENT_TARGET }} \
-              ${{ secrets.REMOTE_PATH_STAGING }}/current
+          ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER_PRODUCTION }}@${{ secrets.REMOTE_HOST_PRODUCTION }} '
+            ln -nfs ${{ secrets.REMOTE_PATH_PRODUCTION }}/${{ steps.deployment_target.outputs.DEPLOYMENT_TARGET }} \
+              ${{ secrets.REMOTE_PATH_PRODUCTION }}/current
           '
 
       - name: Deployment success
         if: success()
-        run: echo "✅ Staging deployment completed without health check!"
+        run: echo "✅ Production deployment completed without health check!"
 
       - name: Deployment failure
         if: failure()
-        run: echo "❌ Staging deployment failed!"
+        run: echo "❌ Production deployment failed!"
