@@ -1,0 +1,121 @@
+name: Deploy to Staging
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        required: true
+        type: string
+    secrets:
+      SSH_PRIVATE_KEY_STAGING:
+        required: true
+      REMOTE_USER_STAGING:
+        required: true
+      REMOTE_HOST_STAGING:
+        required: true
+      REMOTE_PATH_STAGING:
+        required: true
+
+env:
+  PHP_VERSION: '8.2'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Setup PHP
+        uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ env.PHP_VERSION }}
+          extensions: mbstring, intl, zip, pdo, mysql, bcmath, gd, xml, curl, redis, imagick
+          tools: composer
+
+      - name: Install rsync
+        run: sudo apt-get update && sudo apt-get install -y rsync
+
+      - name: Set storage permissions
+        run: |
+          mkdir -p storage/framework/cache
+          sudo chmod -R 775 storage bootstrap/cache
+          sudo chown -R $USER:www-data storage
+
+      - name: Cache Composer packages
+        uses: actions/cache@v3
+        with:
+          path: vendor
+          key: ${{ runner.os }}-composer-${{ hashFiles('**/composer.lock') }}
+          restore-keys: ${{ runner.os }}-composer-
+
+      - name: Install Composer dependencies
+        run: composer install --no-dev --no-interaction --prefer-dist --optimize-autoloader
+      
+      - name: Build Frontend Assets
+        run: npm install && npm run build
+
+      - name: Setup SSH key
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.SSH_PRIVATE_KEY_STAGING }}
+
+      - name: Setup remote directories
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER_STAGING }}@${{ secrets.REMOTE_HOST_STAGING }} '
+            mkdir -p ${{ secrets.REMOTE_PATH_STAGING }}/blue &&
+            mkdir -p ${{ secrets.REMOTE_PATH_STAGING }}/green &&
+            mkdir -p ${{ secrets.REMOTE_PATH_STAGING }}/shared/storage
+          '
+
+      - name: Determine deployment target (blue or green)
+        id: deployment_target
+        run: |
+          TARGET=$(ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER_STAGING }}@${{ secrets.REMOTE_HOST_STAGING }} '
+            CURRENT_LINK="${{ secrets.REMOTE_PATH_STAGING }}/current"
+            if [ -L "$CURRENT_LINK" ] && [ -e "$CURRENT_LINK" ]; then
+              readlink "$CURRENT_LINK" | grep -q "blue" && echo "green" || echo "blue"
+            else
+              echo "blue"
+            fi
+          ')
+          echo "DEPLOYMENT_TARGET=$TARGET" >> $GITHUB_OUTPUT
+
+      - name: Deploy files to slot
+        run: |
+          rsync -avz --exclude='.git' --exclude='node_modules' --exclude='tests' --exclude='.env' ./ \
+            ${{ secrets.REMOTE_USER_STAGING }}@${{ secrets.REMOTE_HOST_STAGING }}:${{ secrets.REMOTE_PATH_STAGING }}/${{ steps.deployment_target.outputs.DEPLOYMENT_TARGET }}/
+
+      - name: Setup symlinks
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER_STAGING }}@${{ secrets.REMOTE_HOST_STAGING }} '
+            ln -nfs ${{ secrets.REMOTE_PATH_STAGING }}/shared/storage ${{ secrets.REMOTE_PATH_STAGING }}/${{ steps.deployment_target.outputs.DEPLOYMENT_TARGET }}/storage &&
+            ln -nfs ${{ secrets.REMOTE_PATH_STAGING }}/.env ${{ secrets.REMOTE_PATH_STAGING }}/${{ steps.deployment_target.outputs.DEPLOYMENT_TARGET }}/.env
+          '
+
+      - name: Run Artisan commands
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER_STAGING }}@${{ secrets.REMOTE_HOST_STAGING }} '
+            cd ${{ secrets.REMOTE_PATH_STAGING }}/${{ steps.deployment_target.outputs.DEPLOYMENT_TARGET }} &&
+            php artisan optimize &&
+            php artisan optimize:clear
+             
+          '
+
+      - name: Switch symlink to new slot
+        run: |
+          ssh -o StrictHostKeyChecking=no ${{ secrets.REMOTE_USER_STAGING }}@${{ secrets.REMOTE_HOST_STAGING }} '
+            ln -nfs ${{ secrets.REMOTE_PATH_STAGING }}/${{ steps.deployment_target.outputs.DEPLOYMENT_TARGET }} \
+              ${{ secrets.REMOTE_PATH_STAGING }}/current
+          '
+
+      - name: Deployment success
+        if: success()
+        run: echo "✅ Staging deployment completed without health check!"
+
+      - name: Deployment failure
+        if: failure()
+        run: echo "❌ Staging deployment failed!"
